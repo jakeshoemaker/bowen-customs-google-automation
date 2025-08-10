@@ -1,0 +1,16 @@
+{
+  "name": "bowen_appscript",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "push": "tsc && cp src/appsscript.json build/ && clasp push",
+    "pull": "clasp pull"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/google-apps-script": "^1.0.99"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
