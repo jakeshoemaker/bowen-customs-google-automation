@@ -1,5 +1,5 @@
 const CONFIG = {
-  SHEET_NAME: 'Master',
+  SHEET_NAME: 'DONTRUNMaster',
   CALENDAR_ID: 'MATS-CALENDAR-ID',
   TITLE_COL: 3,
   INSTALL_START_COL: 21,
@@ -10,15 +10,21 @@ const CONFIG = {
     'Complex': 2,
     'Standard': 1,
     'Simple': 1
-  }
+  },
+  MILLISECONDS_PER_DAY: 1000 * 60 * 60 * 24
 };
 
+// Sheet == Config
+// InstallsPerWeek == B1 [1, 0]
+// CabChassis Cell == B11 [1, 10]
+// If BuiltType == CabChassis, Build takes 1.5 weeks
 function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit) {
   const sheet = e.range.getSheet();
   if (
     sheet.getName() !== CONFIG.SHEET_NAME &&
     e.range.getColumn() !== CONFIG.INSTALL_START_COL
   ) {
+    logToDocument(`Skipping Edit \n`);
     return;
   }
 
@@ -30,22 +36,33 @@ function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit) {
     `Edit triggered:\n Col: ${editedCol}\n Row: ${editedRow}\n Value: ${editedValue}`
   );
 
+  const logs = [];
+  const oneWeek = CONFIG.MILLISECONDS_PER_DAY * 7;
   const sheetData = sheet.getDataRange().getValues();
-  for (let i = editedRow; i < sheetData.length; i++) {
-    const row = sheetData[i];
-    const customer = row[0];
-    const vehicle = row[1];
-    const installStart = row[CONFIG.INSTALL_START_COL]; // FIXED index
-    const valid = validateDate(installStart);
 
-    if (!valid) {
-      logToDocument(`Row ${i + 1}: Invalid date`);
-    } else {
-      logToDocument(
-        `Row ${i + 1}: Customer: ${customer}, Vehicle: ${vehicle}, Install Start: ${installStart}`
-      );
+  for (let i = editedRow; i < sheetData.length; i++) {
+    const prevRow = sheetData[i - 1];
+    const currentRow = sheetData[i];
+
+    const prevInstallStart = validateDate(prevRow[CONFIG.INSTALL_START_COL]);
+    const currentInstallStart = validateDate(currentRow[CONFIG.INSTALL_START_COL]);
+
+    if (!prevInstallStart || !currentInstallStart) continue;
+
+    if (hasCollision(prevInstallStart, currentInstallStart)) {
+      const shiftedInstallDate = new Date(prevInstallStart.getTime() + oneWeek);
+      sheetData[i][CONFIG.INSTALL_START_COL] = shiftedInstallDate;
+      logs.push(`Row ${i + 1} shifted to ${shiftedInstallDate.toDateString()}`);
     }
   }
+
+  // Write updated data back to the sheet
+  sheet
+    .getRange(1, 1, sheetData.length, sheetData[0].length)
+    .setValues(sheetData);
+
+  logs.push(['Done\n']);
+  logToDocument(logs.join('\n')); // Log the resulting operation
 }
 
 function logToDocument(message: string) {
@@ -68,4 +85,12 @@ function validateDate(value: unknown): Date | null {
     return value;
   }
   return null;
+}
+
+function hasCollision(prevDate: Date, currentDate: Date): boolean {
+  const diffDays = (
+    currentDate.getTime() - prevDate.getTime()
+  ) / (1000 * 60 * 60 * 24);
+
+  return diffDays < 7; // Less than 1 week apart
 }
