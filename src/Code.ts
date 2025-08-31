@@ -4,7 +4,6 @@
 const CONFIG = {
   SHEET_NAME: 'Master',
   CONFIG_SHEET_NAME: 'Config',
-  CALENDAR_ID: 'MATS_CALENDAR_ID', // <-- IMPORTANT: Change this!
   TITLE_COL: 4,                    // Column A: Customer Build Title
   INSTALL_START_COL: 22,           // Column V: Install Start date (the trigger column)
   PREVENT_CALENDAR_MGMT: true,     // A helper to prevent calendar management while testing
@@ -55,18 +54,31 @@ function recalculateSchedule(
   const dataRange = sheet.getDataRange();
   const data = dataRange.getValues();
   const backgrounds = dataRange.getBackgrounds();
-  const cal = CalendarApp.getCalendarById(CONFIG.CALENDAR_ID);
+  const cal = CalendarApp.getCalendarById(appConfig.calendarId);
   let hasChanges = false;
 
-  // 2. PRE-FILL CAPACITY: Count installs in weeks *before* the change.
+  // 2. BUILD CAPACITY MAP for all rows *before* the change.
   const weeklyInstallCounts = new Map();
   for (let i = 1; i < startRow - 1; i++) { // Loop up to the row *before* the startRow
     const date = new Date(data[i][CONFIG.INSTALL_START_COL - 1]);
-    if (!isNaN(date.getTime())) {
-      const week = getWeekNumber(date);
-      weeklyInstallCounts.set(week, (weeklyInstallCounts.get(week) || 0) + 1);
+    const color = backgrounds[i][CONFIG.INSTALL_START_COL - 1];
+    const buildType = (color === appConfig.cabChassisColor) ? 'CabChassis' : 'Standard';
+
+    if (isNaN(date.getTime())) continue;
+
+    const startWeek = getWeekNumber(date);
+    weeklyInstallCounts.set(startWeek, (weeklyInstallCounts.get(startWeek) || 0) + 1);
+
+    // If the build is a CabChassis, increment next weeks capacity as builds of this 
+    // type take 2 weeks to complete.
+    if (buildType === 'CabChassis') {
+      const nextWeek = getWeekNumber(new Date(date.setDate(date.getDate() + 7)));
+      weeklyInstallCounts.set(nextWeek, (weeklyInstallCounts.get(nextWeek) || 0) + 1);
     }
   }
+
+  // Check point: Log the mapp before processing the edited row down
+  logToDocument(`Installs organized by week: ${JSON.stringify(weeklyInstallCounts)}`)
 
   // 3. PROCESS FROM EDITED ROW DOWNWARDS
   for (let i = startRow - 1; i < data.length; i++) {
@@ -74,37 +86,46 @@ function recalculateSchedule(
     let proposedDate = new Date(originalDate);
     if (isNaN(proposedDate.getTime())) continue;
 
-    // A. RESPECT BUFFER FROM PREVIOUS ROW
-    const prevFinalDate = new Date(
-      data[i - 1][CONFIG.INSTALL_START_COL - 1]
-    );
-    if (!isNaN(prevFinalDate.getTime())) {
-      const blockerColor = backgrounds[i - 1][CONFIG.INSTALL_START_COL - 1];
-      const blockerBuildType =
-        (blockerColor === appConfig.cabChassisColor)
-          ? 'CabChassis'
-          : 'Standard';
-      const weeksToShift = CONFIG.BUILD_SHIFTS[blockerBuildType] || 1;
+    // A job cannot start before the previous job's date.
+    const prevDate = new Date(data[i - 1][CONFIG.INSTALL_START_COL - 1]);
+    if (proposedDate < prevDate) {
+      proposedDate = prevDate;
+    }
 
-      const minAllowedDate = new Date(prevFinalDate);
-      minAllowedDate.setDate(minAllowedDate.getDate() + weeksToShift * 7);
+    const color = backgrounds[i][CONFIG.INSTALL_START_COL - 1];
+    const buildType = (color === appConfig.cabChassisColor) ? 'CabChassis' : 'Standard';
 
-      // If proposedDate is before the minAllowedDate, set it as new minAllowedDate
-      if (proposedDate < minAllowedDate) {
-        proposedDate = minAllowedDate;
+    // Find the earliest available slot for this build type
+    while (true) {
+      const startWeek = getWeekNumber(proposedDate);
+      const nextWeekDate = new Date(proposedDate);
+      nextWeekDate.setDate(nextWeekDate.getDate() + 7);
+      const nextWeek = getWeekNumber(nextWeekDate);
+
+      const startWeekSlotsUsed = weeklyInstallCounts.get(startWeek) || 0;
+      const nextWeekSlotsUsed = weeklyInstallCounts.get(nextWeek) || 0;
+
+      let canFit = false;
+      if (buildType === 'Standard' && startWeekSlotsUsed < appConfig.installsPerWeek) {
+        canFit = true;
+      } else if (buildType === 'CabChassis' && startWeekSlotsUsed < appConfig.installsPerWeek && nextWeekSlotsUsed < appConfig.installsPerWeek) {
+        canFit = true;
+      }
+
+      if (canFit) {
+        // Found a slot, lock it in and update the map for the next iteration
+        weeklyInstallCounts.set(startWeek, startWeekSlotsUsed + 1);
+        if (buildType === 'CabChassis') {
+          weeklyInstallCounts.set(nextWeek, nextWeekSlotsUsed + 1);
+        }
+        break; // Exit the while loop
+      } else {
+        // No slot, push to the start of the next week and try again
+        proposedDate.setDate(proposedDate.getDate() + 7);
       }
     }
 
-    // B. RESPECT WEEKLY CAPACITY
-    let week = getWeekNumber(proposedDate);
-    while ((weeklyInstallCounts.get(week) || 0) >= appConfig.installsPerWeek) {
-      proposedDate.setDate(proposedDate.getDate() + 7); // Push to the next week
-      week = getWeekNumber(proposedDate);
-    }
-
-    // C. FINALIZE & UPDATE
-    weeklyInstallCounts.set(week, (weeklyInstallCounts.get(week) || 0) + 1);
-
+    // If the date was changed, update everything
     if (proposedDate.getTime() !== originalDate.getTime()) {
       data[i][CONFIG.INSTALL_START_COL - 1] = proposedDate;
       hasChanges = true;
@@ -132,7 +153,8 @@ function loadAppConfig() {
   }
   return {
     installsPerWeek: configSheet.getRange("B1").getValue(),
-    cabChassisColor: configSheet.getRange("B2").getBackground()
+    cabChassisColor: configSheet.getRange("B2").getBackground(),
+    calendarId: configSheet.getRange("B3").getValue()
   };
 }
 
