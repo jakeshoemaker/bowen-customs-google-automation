@@ -14,10 +14,9 @@
     ],
     "allowJs": true
   },
-  "include": [
-    "src/**/*"
-  ],
+  "include": ["src/**/*"],
   "exclude": [
-    "build/**/*"
+    "build/**/*",
+    "old.Code.ts"
   ]
 }
